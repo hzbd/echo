@@ -1,57 +1,90 @@
 use axum::{
     body::Bytes,
-    http::{HeaderMap, Method, StatusCode, Uri}, // Import Method and Uri
+    extract::State,
+    http::{HeaderMap, Method, StatusCode, Uri},
     Router,
 };
+use clap::Parser;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-// Type alias for HMAC-SHA256
+// Type alias for HMAC-SHA256 encryption algorithm
 type HmacSha256 = Hmac<Sha256>;
 
-// Define the secret key (Corresponds to Python's b'sk_prod_123456')
-const SECRET: &[u8] = b"sk_prod_123456";
+// Command line arguments structure definition
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Verification secret key (default value: sk_prod_123456)
+    #[arg(short, long, default_value = "sk_prod_123456")]
+    secret: String,
+
+    /// Server listening port (default value: 3000)
+    #[arg(short, long, default_value_t = 3000)]
+    port: u16,
+}
+
+// Application global state for concurrent safe sharing
+#[derive(Clone)]
+struct AppState {
+    secret: String,
+}
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt::init();
+    // Initialize tracing subscriber for logging functionality
+    tracing_subscriber::fmt().init();
 
-    // Build router
-    // Use 'fallback' to catch all undefined routes (implements "accept all paths")
-    let app = Router::new().fallback(webhook_handler);
+    // Parse command line arguments
+    let args = Args::parse();
 
-    // Listen on port 3000
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    println!("🚀 Universal Webhook Receiver listening on {}", addr);
-    println!("   Accepting ALL paths and methods...");
+    // Print current runtime configuration information
+    println!("--------------------------------------------------------");
+    println!("Active Secret:   '{}'", args.secret);
+    println!("Listening Port:  {}", args.port);
+    println!("--------------------------------------------------------");
 
+    // Wrap state with Arc for thread-safe sharing across axum handlers
+    let state = Arc::new(AppState {
+        secret: args.secret.clone(),
+    });
+
+    // Build axum router with global state injection & fallback handler
+    let app = Router::new()
+        .fallback(webhook_handler)
+        .with_state(state);
+
+    // Bind server to ipv4 0.0.0.0 with specified port
+    let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
+    println!("Server started on {}", addr);
+
+    // Start TCP listener and axum HTTP server
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 
-// Added method and uri parameters to print request details
+/// Unified webhook request handler with HMAC signature verification logic
 async fn webhook_handler(
+    State(state): State<Arc<AppState>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> StatusCode {
     println!("\n========================================================");
-    // Print specific request Method and URI
-    println!("📢 Request: {} {}", method, uri);
+    println!("Request: {} {}", method, uri);
     println!("========================================================");
 
-    // 1. Print all Headers
+    // Print all incoming request headers
     println!("[Headers]:");
     for (name, value) in headers.iter() {
         println!("  {}: {:?}", name, value);
     }
 
-    // 2. Print Body content
+    // Print request body content with UTF8 check
     println!("\n[Body]:");
-    // Simple check to avoid flooding the console with binary data or large payloads
     if body.is_empty() {
         println!("  <Empty Body>");
     } else {
@@ -61,42 +94,51 @@ async fn webhook_handler(
         }
     }
 
+    // Start HMAC signature verification process
     println!("\n[Verification]:");
-    // 3. Verification Logic (Only executes if the signature header exists)
     if let Some(signature_header) = headers.get("X-Super-Signature") {
+        // Parse signature header value to UTF8 string
         let signature_str = match signature_header.to_str() {
             Ok(s) => s,
             Err(_) => {
-                println!("  ❌ Error: Signature header contains invalid ASCII.");
+                println!("Error: Invalid signature header encoding.");
                 return StatusCode::BAD_REQUEST;
             }
         };
 
-        // Format expectation: sha256=xxxx...
+        // Split signature format: sha256=signature_value
         let parts: Vec<&str> = signature_str.split('=').collect();
         if parts.len() < 2 {
-            println!("  ❌ Error: Invalid signature format. Expected 'key=value'");
+            println!("Error: Malformed signature header format.");
             return StatusCode::BAD_REQUEST;
         }
         let provided_signature = parts[1];
 
-        // Calculate expected HMAC
-        let mut mac = HmacSha256::new_from_slice(SECRET).expect("HMAC error");
+        // Initialize HMAC-SHA256 instance with application secret key
+        let mut mac = HmacSha256::new_from_slice(state.secret.as_bytes())
+            .expect("HMAC initialization failed: invalid secret key bytes");
+
+        // Update HMAC context with raw request body only (core verification rule)
         mac.update(&body);
+        // mac.update(b"\n"); // Optional: append line break if required by webhook provider
+
+        // Generate expected signature & encode to hex string
         let expected_signature = hex::encode(mac.finalize().into_bytes());
 
-        println!("  Secrets:    {}", String::from_utf8_lossy(SECRET));
+        // Print debug info for signature verification
+        println!("  Secrets:    '{}'", state.secret);
         println!("  Provided:   {}", provided_signature);
         println!("  Calculated: {}", expected_signature);
 
+        // Signature comparison & response
         if provided_signature != expected_signature {
-            println!("  ⛔ Result:  Invalid signature! (401)");
+            println!("Result:  Invalid signature! (401 Unauthorized)");
             return StatusCode::UNAUTHORIZED;
         } else {
-            println!("  ✅ Result:  Signature verified.");
+            println!("Result:  Signature verified successfully.");
         }
     } else {
-        println!("  ⚠️ Info: No 'X-Super-Signature' header. Skipping verification.");
+        println!("Info: X-Super-Signature header is missing, skip verification.");
     }
 
     println!("--------------------------------------------------------\n");
