@@ -1,118 +1,134 @@
 # Echo Receiver
-A lightweight, Rust-based HTTP server designed to debug and verify webhook requests. It accepts traffic on **any path** and **any HTTP method**, logs the details to the console, and performs HMAC-SHA256 signature verification if a specific header is present.
+
+A lightweight, Rust-based HTTP server designed to debug and verify webhook requests. It accepts traffic on **any path** and **any HTTP method**, logs structured details to the console, and performs HMAC-SHA256 signature verification if a specific header is present.
 
 ## Features
-- **Catch-All Routing**: Accepts requests on any URI (e.g., `/`, `/api/callback`, `/hooks/v1`, `/webhook`).
-- **Full Request Logging**: Prints HTTP Method, Request URI, all Headers and Body content (plain text / binary size) to console for debugging.
-- **HMAC-SHA256 Signature Verification**: Automatically verify payload integrity via `X-Super-Signature` header.
-- **Flexible Configuration**: Configurable secret key and listening port via command-line arguments (no hardcoding).
-- **High Performance**: Built on [Axum](https://github.com/tokio-rs/axum) & [Tokio](https://tokio.rs/) with async runtime, zero redundant memory copy.
-- **Standard HTTP Responses**: Returns `200 OK`/`400 Bad Request`/`401 Unauthorized` based on verification result.
+
+- **Catch-All Routing**: Accepts requests on any URI (e.g., `/`, `/api/callback`, `/hooks/v1`).
+- **High-Readability Logging**:
+  - **Aligned Output**: Key-Value pairs are vertically aligned for easy scanning.
+  - **Timestamped**: Records the exact arrival time of every request.
+  - **JSON Pretty-Printing**: Automatically detects and formats JSON payloads.
+- **HMAC-SHA256 Verification**: Verifies payload integrity via `X-Super-Signature` header against a secret key.
+- **Flexible Configuration**: Configurable secret key and listening port via command-line arguments.
+- **High Performance**: Built on [Axum](https://github.com/tokio-rs/axum) & [Tokio](https://tokio.rs/).
 
 ## Prerequisites
+
 - Rust (latest stable version)
-- Cargo (Rust's build tool)
+- Cargo
 
 ## Installation & Run
-### Basic Run (Default Config)
-Starts server with **default secret**: `sk_prod_123456` and **default port**: `3000`
+
+### 1. Basic Run (Default Config)
+Starts server with **default secret**: `sk_prod_123456` and **default port**: `3000`.
+
 ```bash
 cargo run
 ```
-Server listens on `0.0.0.0:3000`
 
-### Custom Configuration (Command-line Arguments)
-Supports custom secret key and port, use `--secret` / `--port` flags:
+### 2. Custom Configuration
+Customize the secret key and port using command-line flags:
+
 ```bash
 # Custom secret + custom port
-cargo run -- --secret "your_custom_secret" --port 8080
+cargo run -- --secret "my_secure_secret" --port 8080
 
-# Only custom secret (keep port 3000)
-cargo run -- --secret "sk_prod_888888"
-
-# Only custom port (keep default secret)
-cargo run -- --port 9090
+# Only custom secret (port defaults to 3000)
+cargo run -- --secret "another_secret"
 ```
 
-### Startup Confirmation
-Server prints active config on launch for verification:
-```
---------------------------------------------------------
-Active Secret:   'sk_prod_123456'
-Listening Port:  3000
---------------------------------------------------------
-Server started on 0.0.0.0:3000
+### 3. Startup Confirmation
+You will see a banner confirming the active configuration:
+
+```text
+ WEBHOOK RECEIVER ONLINE
+  Secret Key         : sk_prod_123456
+  Listen Port        : 3000
 ```
 
 ## Signature Verification Rule
-> Core Logic: HMAC-SHA256 signature is calculated using **raw request body only** (no extra line breaks/characters appended).
-> Header Format: `X-Super-Signature: sha256=hex_encoded_signature`
+
+> **Core Logic**: The HMAC-SHA256 signature is calculated using the **raw request body bytes**.
+> **Header Format**: `X-Super-Signature: sha256=hex_encoded_signature`
 
 ### How To Calculate Valid Signature
-Use this **one-line OpenSSL command** (terminal) to generate a valid signature for any payload/secret combination (matches server logic exactly):
+Use this one-line command to generate a valid signature for testing:
+
 ```bash
-# Universal formula
-echo -n "your_request_body" | openssl dgst -sha256 -hmac "your_secret_key"
+# Format: echo -n "BODY" | openssl dgst -sha256 -hmac "SECRET"
+echo -n "hello world" | openssl dgst -sha256 -hmac "sk_prod_123456"
 ```
-The output hex string = valid signature for your request.
+*Result: `e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959`*
 
 ## Usage Examples
+
 ### 1. Request Without Signature (Logging Only)
-All paths/methods work, server logs details and returns `200 OK` (skip verification):
+Any path is accepted. Verification is skipped if the header is missing.
+
 ```bash
-curl -X POST http://127.0.0.1:3000/any/custom/path \
+curl -X POST http://127.0.0.1:3000/my/callback \
      -H "Content-Type: application/json" \
-     -d '{"event":"success","data":{"id":123}}'
+     -d '{"status":"ok"}'
 ```
 
-### 2. Request With VALID Signature (Success, 200 OK)
-**Config**: Secret = `sk_prod_123456`, Body = `hello world`
-**Valid Signature**: `e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959`
-```bash
-curl -X POST http://127.0.0.1:3000/webhook \
-     -H "X-Super-Signature: sha256=e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959" \
-     -d "hello world"
-```
-**Result**: Signature verified successfully.
+### 2. Request With VALID Signature
+Sends a JSON body. The server will pretty-print the JSON and verify the signature.
 
-### 3. Request With INVALID Signature (Failed, 401 Unauthorized)
+**Secret**: `sk_prod_123456`
+**Body**: `{"order_id":12345,"status":"paid","items":["apple","banana"]}`
+**Signature**: `f52e59779307d727276326e0300a7206b020023a1a364239276d497c276f573d`
+
 ```bash
 curl -X POST http://127.0.0.1:3000/webhook \
-     -H "X-Super-Signature: sha256=wrong_signature_123456" \
-     -d "hello world"
+  -H "Content-Type: application/json" \
+  -H "X-Super-Signature: sha256=f52e59779307d727276326e0300a7206b020023a1a364239276d497c276f573d" \
+  -d '{"order_id":12345,"status":"paid","items":["apple","banana"]}'
 ```
 
-### 4. Malformed Signature Header (Invalid Format, 400 Bad Request)
+### 3. Request With INVALID Signature
+The server calculates the hash using the active secret and compares it.
+
 ```bash
 curl -X POST http://127.0.0.1:3000/webhook \
-     -H "X-Super-Signature: missing_sha256_prefix" \
+     -H "X-Super-Signature: sha256=bad_signature_123" \
      -d "hello world"
 ```
 
 ## Sample Console Log
-Complete request details logged for every incoming traffic:
-```
-========================================================
-📢 Request: POST /webhook
-========================================================
-[Headers]:
-  host: "127.0.0.1:3000"
-  user-agent: "curl/8.7.1"
-  accept: "*/*"
-  x-super-signature: "sha256=e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959"
-  content-length: "11"
-  content-type: "application/x-www-form-urlencoded"
 
-[Body]:
-hello world
+The server produces clean, structured logs for every request:
 
-[Verification]:
-  Secrets:    'sk_prod_123456'
-  Provided:   e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959
-  Calculated: e6fa8032599cfbb055e4835c5daa906a1758125d56134f50b2a0af74150c8959
-  Result:  Signature verified successfully.
---------------------------------------------------------
+```text
+==================================================
+  Time               : 2023-10-27 10:30:45
+  Method             : POST
+  Path               : /webhook
+
+ HEADERS
+  host               : 127.0.0.1:3000
+  content-type       : application/json
+  x-super-signature  : sha256=f52e5...
+
+ PAYLOAD
+  Body               : {
+                         "items": [
+                           "apple",
+                           "banana"
+                         ],
+                         "order_id": 12345,
+                         "status": "paid"
+                       }
+
+ SIGNATURE VERIFICATION
+  Secret Used        : sk_prod_123456
+  Expected           : f52e5...
+  Received           : f52e5...
+  Result             : PASS
+==================================================
 ```
 
 ## License
+
 MIT
+```
