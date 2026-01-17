@@ -131,4 +131,3 @@ The server produces clean, structured logs for every request:
 ## License
 
 MIT
-```
