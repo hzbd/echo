@@ -1,6 +1,6 @@
 [package]
-name = "echo"
-version = "0.1.0"
+name = "echo-receiver"
+version = "0.1.2"
 edition = "2024"
 
 [dependencies]
